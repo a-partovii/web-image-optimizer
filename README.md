@@ -1,6 +1,6 @@
 # web-image-optimizer
 
-A single MJS script to optimize images for your website backend.
+A single MJS script to optimize images in your website backend.
 
 One exported function. No configuration files. Just Sharp and a file path.
 
