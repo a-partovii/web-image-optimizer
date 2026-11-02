@@ -1,3 +1,21 @@
+/**
+ * Optimize a single image while preserving transparency and format differences.
+ *
+ * @param {string} input  Path to the source file.
+ * @param {object} [options]
+ * @param {string}  [options.output]                Output path (default: next to input).
+ * @param {string}  [options.format="webp"]         "webp" | "avif" | "jpeg" | "png" | "keep".
+ * @param {number}  [options.quality]               Quality (default depends on format).
+ * @param {number}  [options.maxWidth]              Max width.
+ * @param {number}  [options.maxHeight]             Max height.
+ * @param {string}  [options.fit="inside"]          "inside" | "cover" | "contain" | "fill".
+ * @param {boolean} [options.deleteOriginal=false]  Delete source after success.
+ * @param {boolean} [options.overwrite=false]       Overwrite existing output.
+ * @param {boolean} [options.onlyIfSmaller=true]    Keep original if output is larger.
+ * @param {boolean} [options.lossless=false]        WebP/AVIF only.
+ *
+ * @returns {Promise<{input:string, output:string, inputSize:number, outputSize:number, skipped:boolean, reason?:string}>}
+ */
 import { stat, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
@@ -33,7 +51,7 @@ export async function optimizeImage(input, options = {}) {
         lossless = false,
     } = options;
 
-    // ۱) بررسی ورودی
+    // 1) Validate input.
     const inSize = await fileSize(input);
     if (inSize === 0) throw new Error(`file not found or empty: ${input}`);
 
@@ -60,12 +78,12 @@ export async function optimizeImage(input, options = {}) {
         };
     }
 
-    // ۲) متادیتا
+    // 2) Read metadata.
     const meta = await sharp(input).metadata();
     const isAnimated = (meta.pages ?? 1) > 1;
     const hasAlpha = !!meta.hasAlpha;
 
-    // ۳) فرمت خروجی
+    // 3) Resolve output format.
     let outFormat = format;
     if (outFormat === "keep") {
         if (inExt === ".jpg" || inExt === ".jpeg") outFormat = "jpeg";
@@ -88,7 +106,7 @@ export async function optimizeImage(input, options = {}) {
     const outPath = output ?? replaceExt(input, outExt);
     const inPlace = path.resolve(outPath) === path.resolve(input);
 
-    // اگر خروجی جای دیگری است و وجود دارد → skip (مگر overwrite)
+    // Skip if a different output already exists (unless overwrite).
     if (!inPlace && !overwrite) {
         const existing = await fileSize(outPath);
         if (existing > 0) {
@@ -103,16 +121,14 @@ export async function optimizeImage(input, options = {}) {
         }
     }
 
-    // ۴) pipeline
+    // 4) Build pipeline.
     let pipeline = sharp(input, isAnimated ? { animated: true } : {});
 
     if (maxWidth || maxHeight) {
         const resizeOpts = { width: maxWidth, height: maxHeight, fit, withoutEnlargement: true };
-        // فقط `contain` پدینگ لازم دارد
+        // Only "contain" needs a background; keep alpha when available.
         if (fit === "contain") {
-            resizeOpts.background = hasAlpha
-                ? { r: 0, g: 0, b: 0, alpha: 0 } // شفاف
-                : "#ffffff";
+            resizeOpts.background = hasAlpha ? { r: 0, g: 0, b: 0, alpha: 0 } : "#ffffff";
         }
         pipeline = pipeline.resize(resizeOpts);
     }
@@ -123,7 +139,7 @@ export async function optimizeImage(input, options = {}) {
         case "webp":
             pipeline = pipeline.webp({
                 quality: q,
-                alphaQuality: 100, // آلفا کامل حفظ می‌شود
+                alphaQuality: 100, // Preserve full alpha quality.
                 lossless,
                 effort: 4,
             });
@@ -134,17 +150,18 @@ export async function optimizeImage(input, options = {}) {
             break;
 
         case "jpeg":
-            // JPEG آلفا ندارد → روی سفید flatten کن
+            // JPEG has no alpha; flatten onto white.
             if (hasAlpha) pipeline = pipeline.flatten({ background: "#ffffff" });
             pipeline = pipeline.jpeg({ quality: q, mozjpeg: true });
             break;
 
         case "png":
-            // PNG آلفا را خود sharp حفظ می‌کند
+            // PNG keeps alpha natively.
             pipeline = pipeline.png({ compressionLevel: 9 });
             break;
     }
 
+    // 5) Write to a temp file, then atomically replace.
     const tmp = `${outPath}.tmp-${process.pid}-${Date.now()}`;
     await pipeline.toFile(tmp);
     const outSize = await fileSize(tmp);
